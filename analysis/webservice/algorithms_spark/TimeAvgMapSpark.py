@@ -13,17 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
-import math
-import logging
 from datetime import datetime
+from functools import partial
 
 import numpy as np
 import shapely.geometry
-from nexustiles.nexustiles import NexusTileService
 from pytz import timezone
 
-from webservice.NexusHandler import nexus_handler, SparkHandler
+from webservice.NexusHandler import nexus_handler
+from webservice.algorithms_spark.NexusCalcSparkHandler import NexusCalcSparkHandler
 from webservice.webmodel import NexusResults, NexusProcessingException, NoDataException
 
 EPOCH = timezone('UTC').localize(datetime(1970, 1, 1))
@@ -31,7 +29,9 @@ ISO_8601 = '%Y-%m-%dT%H:%M:%S%z'
 
 
 @nexus_handler
-class TimeAvgMapSparkHandlerImpl(SparkHandler):
+class TimeAvgMapNexusSparkHandlerImpl(NexusCalcSparkHandler):
+    # __singleton_lock = threading.Lock()
+    # __singleton_instance = None
     name = "Time Average Map Spark"
     path = "/timeAvgMapSpark"
     description = "Computes a Latitude/Longitude Time Average plot given an arbitrary geographical area and time range"
@@ -67,9 +67,18 @@ class TimeAvgMapSparkHandlerImpl(SparkHandler):
     }
     singleton = True
 
-    def __init__(self):
-        SparkHandler.__init__(self)
-        self.log = logging.getLogger(__name__)
+    # @classmethod
+    # def instance(cls, algorithm_config=None, sc=None):
+    #     with cls.__singleton_lock:
+    #         if not cls.__singleton_instance:
+    #             try:
+    #                 singleton_instance = cls()
+    #                 singleton_instance.set_config(algorithm_config)
+    #                 singleton_instance.set_spark_context(sc)
+    #                 cls.__singleton_instance = singleton_instance
+    #             except AttributeError:
+    #                 pass
+    #     return cls.__singleton_instance
 
     def parse_arguments(self, request):
         # Parse input arguments
@@ -89,39 +98,12 @@ class TimeAvgMapSparkHandlerImpl(SparkHandler):
             raise NexusProcessingException(
                 reason="Cannot compute Latitude/Longitude Time Average plot on a climatology", code=400)
 
-        try:
-            bounding_polygon = request.get_bounding_polygon()
-            request.get_min_lon = lambda: bounding_polygon.bounds[0]
-            request.get_min_lat = lambda: bounding_polygon.bounds[1]
-            request.get_max_lon = lambda: bounding_polygon.bounds[2]
-            request.get_max_lat = lambda: bounding_polygon.bounds[3]
-        except:
-            try:
-                west, south, east, north = request.get_min_lon(), request.get_min_lat(), \
-                                           request.get_max_lon(), request.get_max_lat()
-                bounding_polygon = shapely.geometry.Polygon(
-                    [(west, south), (east, south), (east, north), (west, north), (west, south)])
-            except:
-                raise NexusProcessingException(
-                    reason="'b' argument is required. Must be comma-delimited float formatted as "
-                           "Minimum (Western) Longitude, Minimum (Southern) Latitude, "
-                           "Maximum (Eastern) Longitude, Maximum (Northern) Latitude",
-                    code=400)
+        west, south, east, north = request.get_bounding_box()
+        bounding_polygon = shapely.geometry.Polygon(
+            [(west, south), (east, south), (east, north), (west, north), (west, south)])
 
-        try:
-            start_time = request.get_start_datetime()
-        except:
-            raise NexusProcessingException(
-                reason="'startTime' argument is required. Can be int value seconds from epoch or "
-                       "string format YYYY-MM-DDTHH:mm:ssZ",
-                code=400)
-        try:
-            end_time = request.get_end_datetime()
-        except:
-            raise NexusProcessingException(
-                reason="'endTime' argument is required. Can be int value seconds from epoch or "
-                       "string format YYYY-MM-DDTHH:mm:ssZ",
-                code=400)
+        start_time = request.get_start_datetime()
+        end_time = request.get_end_datetime()
 
         if start_time > end_time:
             raise NexusProcessingException(
@@ -143,6 +125,9 @@ class TimeAvgMapSparkHandlerImpl(SparkHandler):
         :param args: dict
         :return:
         """
+        request_start_time = datetime.now()
+
+        metrics_record = self._create_metrics_record()
 
         ds, bbox, start_time, end_time, nparts_requested = self.parse_arguments(compute_options)
         self._setQueryParams(ds,
@@ -153,7 +138,7 @@ class TimeAvgMapSparkHandlerImpl(SparkHandler):
                              start_time,
                              end_time)
 
-        nexus_tiles = self._find_global_tile_set()
+        nexus_tiles = self._find_global_tile_set(metrics_callback=metrics_record.record_metrics)
 
         if len(nexus_tiles) == 0:
             raise NoDataException(reason="No data found for selected timeframe")
@@ -161,20 +146,20 @@ class TimeAvgMapSparkHandlerImpl(SparkHandler):
         self.log.debug('Found {0} tiles'.format(len(nexus_tiles)))
         print('Found {} tiles'.format(len(nexus_tiles)))
 
-        daysinrange = self._tile_service.find_days_in_range_asc(bbox.bounds[1],
+        daysinrange = self._get_tile_service().find_days_in_range_asc(bbox.bounds[1],
                                                                 bbox.bounds[3],
                                                                 bbox.bounds[0],
                                                                 bbox.bounds[2],
                                                                 ds,
                                                                 start_time,
-                                                                end_time)
+                                                                end_time,
+                                                                metrics_callback=metrics_record.record_metrics)
         ndays = len(daysinrange)
         if ndays == 0:
             raise NoDataException(reason="No data found for selected timeframe")
         self.log.debug('Found {0} days in range'.format(ndays))
         for i, d in enumerate(daysinrange):
             self.log.debug('{0}, {1}'.format(i, datetime.utcfromtimestamp(d)))
-
 
         self.log.debug('Using Native resolution: lat_res={0}, lon_res={1}'.format(self._latRes, self._lonRes))
         self.log.debug('nlats={0}, nlons={1}'.format(self._nlats, self._nlons))
@@ -200,7 +185,9 @@ class TimeAvgMapSparkHandlerImpl(SparkHandler):
         max_time_parts = 72
         num_time_parts = min(max_time_parts, ndays)
 
-        spark_part_time_ranges = np.tile(np.array([a[[0,-1]] for a in np.array_split(np.array(daysinrange), num_time_parts)]), (len(nexus_tiles_spark),1))
+        spark_part_time_ranges = np.tile(
+            np.array([a[[0, -1]] for a in np.array_split(np.array(daysinrange), num_time_parts)]),
+            (len(nexus_tiles_spark), 1))
         nexus_tiles_spark = np.repeat(nexus_tiles_spark, num_time_parts, axis=0)
         nexus_tiles_spark[:, 1:3] = spark_part_time_ranges
 
@@ -209,24 +196,18 @@ class TimeAvgMapSparkHandlerImpl(SparkHandler):
         self.log.info('Using {} partitions'.format(spark_nparts))
 
         rdd = self._sc.parallelize(nexus_tiles_spark, spark_nparts)
-        sum_count_part = rdd.map(self._map)
-        sum_count = \
-            sum_count_part.combineByKey(lambda val: val,
-                                        lambda x, val: (x[0] + val[0],
-                                                        x[1] + val[1]),
-                                        lambda x, y: (x[0] + y[0], x[1] + y[1]))
-        fill = self._fill
-        avg_tiles = \
-            sum_count.map(lambda (bounds, (sum_tile, cnt_tile)):
-                          (bounds, [[{'avg': (sum_tile[y, x] / cnt_tile[y, x])
-                          if (cnt_tile[y, x] > 0)
-                          else fill,
-                                      'cnt': cnt_tile[y, x]}
-                                     for x in
-                                     range(sum_tile.shape[1])]
-                                    for y in
-                                    range(sum_tile.shape[0])])).collect()
+        metrics_record.record_metrics(partitions=rdd.getNumPartitions())
+        sum_count_part = rdd.map(partial(self._map, self._tile_service_factory, metrics_record.record_metrics))
+        reduce_duration = 0
+        reduce_start = datetime.now()
+        sum_count = sum_count_part.combineByKey(lambda val: val,
+                                                lambda x, val: (x[0] + val[0],
+                                                                x[1] + val[1]),
+                                                lambda x, y: (x[0] + y[0], x[1] + y[1]))
+        reduce_duration += (datetime.now() - reduce_start).total_seconds()
+        avg_tiles = sum_count.map(partial(calculate_means, metrics_record.record_metrics, self._fill)).collect()
 
+        reduce_start = datetime.now()
         # Combine subset results to produce global map.
         #
         # The tiles below are NOT Nexus objects.  They are tuples
@@ -262,13 +243,18 @@ class TimeAvgMapSparkHandlerImpl(SparkHandler):
                             tile_min_lon, tile_max_lon,
                             y0, y1, x0, x1))
 
-        # Store global map in a NetCDF file.
-        self._create_nc_file(a, 'tam.nc', 'val', fill=self._fill)
+        # Store global map in a NetCDF file for debugging purpose
+        # if activated this line is not thread safe and might cause error when concurrent access occurs
+        # self._create_nc_file(a, 'tam.nc', 'val', fill=self._fill)
 
         # Create dict for JSON response
         results = [[{'mean': a[y, x], 'cnt': int(n[y, x]),
                      'lat': self._ind2lat(y), 'lon': self._ind2lon(x)}
                     for x in range(a.shape[1])] for y in range(a.shape[0])]
+
+        total_duration = (datetime.now() - request_start_time).total_seconds()
+        metrics_record.record_metrics(actual_time=total_duration, reduce=reduce_duration)
+        metrics_record.print_metrics(self.log)
 
         return NexusResults(results=results, meta={}, stats=None,
                             computeOptions=None, minLat=bbox.bounds[1],
@@ -277,14 +263,14 @@ class TimeAvgMapSparkHandlerImpl(SparkHandler):
                             endTime=end_time)
 
     @staticmethod
-    def _map(tile_in_spark):
+    def _map(tile_service_factory, metrics_callback, tile_in_spark):
         tile_bounds = tile_in_spark[0]
         (min_lat, max_lat, min_lon, max_lon,
          min_y, max_y, min_x, max_x) = tile_bounds
         startTime = tile_in_spark[1]
         endTime = tile_in_spark[2]
         ds = tile_in_spark[3]
-        tile_service = NexusTileService()
+        tile_service = tile_service_factory()
 
         tile_inbounds_shape = (max_y - min_y + 1, max_x - min_x + 1)
 
@@ -294,20 +280,46 @@ class TimeAvgMapSparkHandlerImpl(SparkHandler):
         sum_tile = np.array(np.zeros(tile_inbounds_shape, dtype=np.float64))
         cnt_tile = np.array(np.zeros(tile_inbounds_shape, dtype=np.uint32))
         t_start = startTime
+
+        calculation_duration = 0.0
         while t_start <= endTime:
             t_end = min(t_start + t_incr, endTime)
 
-            nexus_tiles = \
-                tile_service.get_tiles_bounded_by_box(min_lat, max_lat,
-                                                      min_lon, max_lon,
-                                                      ds=ds,
-                                                      start_time=t_start,
-                                                      end_time=t_end)
+            nexus_tiles = tile_service.get_tiles_bounded_by_box(min_lat, max_lat,
+                                                                min_lon, max_lon,
+                                                                ds=ds,
+                                                                start_time=t_start,
+                                                                end_time=t_end,
+                                                                metrics_callback=metrics_callback)
 
+            calculation_start = datetime.now()
             for tile in nexus_tiles:
                 tile.data.data[:, :] = np.nan_to_num(tile.data.data)
                 sum_tile += tile.data.data[0, min_y:max_y + 1, min_x:max_x + 1]
                 cnt_tile += (~tile.data.mask[0, min_y:max_y + 1, min_x:max_x + 1]).astype(np.uint8)
             t_start = t_end + 1
+            calculation_duration += (datetime.now() - calculation_start).total_seconds()
+
+        metrics_callback(calculation=calculation_duration)
 
         return (min_lat, max_lat, min_lon, max_lon), (sum_tile, cnt_tile)
+
+
+def calculate_means(metrics_callback, fill, (bounds, (sum_tile, cnt_tile))):
+    start_time = datetime.now()
+
+    outer = []
+    for y in range(sum_tile.shape[0]):
+        inner = []
+        for x in range(sum_tile.shape[1]):
+            value = {
+                'avg': (sum_tile[y, x] / cnt_tile[y, x]) if (cnt_tile[y, x] > 0) else fill,
+                'cnt': cnt_tile[y, x]
+            }
+            inner.append(value)
+        outer.append(inner)
+
+    duration = (datetime.now() - start_time).total_seconds()
+    metrics_callback(calculation=duration)
+
+    return bounds, outer

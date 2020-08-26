@@ -21,13 +21,13 @@ import requests
 import BaseDomsHandler
 import config
 import values
-from webservice.NexusHandler import NexusHandler as BaseHandler
+from webservice.algorithms.NexusCalcHandler import NexusCalcHandler as BaseHandler
 from webservice.NexusHandler import nexus_handler
 from webservice.webmodel import cached
 
 
 @nexus_handler
-class DomsDatasetListQueryHandler(BaseDomsHandler.BaseDomsQueryHandler):
+class DomsDatasetListQueryHandler(BaseDomsHandler.BaseDomsQueryCalcHandler):
     name = "DOMS Dataset Listing"
     path = "/domslist"
     description = ""
@@ -91,7 +91,7 @@ class DomsDatasetListQueryHandler(BaseDomsHandler.BaseDomsQueryHandler):
     @cached(ttl=(60 * 60 * 1000))  # 1 hour cached
     def calc(self, computeOptions, **args):
 
-        satellitesList = self._tile_service.get_dataseries_list(simple=True)
+        satellitesList = self._get_tile_service().get_dataseries_list(simple=True)
 
         insituList = []
 

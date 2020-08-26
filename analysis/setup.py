@@ -15,44 +15,49 @@
 
 
 import setuptools
+from subprocess import check_call, CalledProcessError
 
 __version__ = '1.6'
+
+
+try:
+    check_call(['conda', 'install', '-y', '-c', 'conda-forge', '--file', 'conda-requirements.txt'])
+except (CalledProcessError, IOError) as e:
+    raise EnvironmentError("Error installing conda packages", e)
+
 
 setuptools.setup(
     name="nexusanalysis",
     version=__version__,
-    url="https://github.jpl.nasa.gov/thuang/nexus",
+    url="https://github.com/apache/incubator-sdap-nexus",
 
     author="Team Nexus",
 
     description="NEXUS API.",
     long_description=open('README.md').read(),
-
-    packages=['webservice', 'webservice.algorithms', 'webservice.algorithms.doms', 'webservice.algorithms_spark'],
-    package_data={'webservice': ['config/web.ini', 'config/algorithms.ini'],
-                  'webservice.algorithms.doms': ['domsconfig.ini']},
+    packages=setuptools.find_packages(),
+    #packages=[
+    #    'webservice',
+    #    'webservice.algorithms',
+    #    'webservice.algorithms.doms',
+    #    'webservice.algorithms_spark',
+    #    'webservice.metrics',
+    #    'webservice.webmodel',
+    #    'webservice.tornado_nexus',
+    #    'webservice.nexus_tornado',
+    #    'webservice.nexus_tornado.request',
+    #    'webservice.nexus_tornado.request.handlers',
+    #    'webservice.nexus_tornado.request.renderers'
+    #],
+    package_data={
+        'webservice': ['config/web.ini', 'config/algorithms.ini'],
+        'webservice.algorithms.doms': ['domsconfig.ini.default']
+    },
     data_files=[
         ('static', ['static/index.html'])
     ],
     platforms='any',
-
-    install_requires=[
-        'nexus-data-access',
-        'tornado',
-        'singledispatch',
-        'pytz',
-        'cython',
-        'requests',
-        'utm',
-        'shapely',
-        'mock',
-        'backports.functools-lru-cache==1.3',
-        'netcdf4',
-        'boto3',
-        'pyproj==1.9.5.1',
-        'pillow==5.0.0'
-    ],
-
+    python_requires='~=2.7',
     classifiers=[
         'Development Status :: 1 - Pre-Alpha',
         'Intended Audience :: Developers',

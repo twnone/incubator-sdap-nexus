@@ -14,14 +14,14 @@
 # limitations under the License.
 
 
-import logging
 import math
 from datetime import datetime
 
 from pytz import timezone
 from shapely.geometry import box
 
-from webservice.NexusHandler import NexusHandler, nexus_handler
+from webservice.NexusHandler import nexus_handler
+from webservice.algorithms.NexusCalcHandler import NexusCalcHandler
 from webservice.webmodel import NexusResults, NexusProcessingException
 
 SENTINEL = 'STOP'
@@ -30,7 +30,7 @@ tile_service = None
 
 
 @nexus_handler
-class LongitudeLatitudeMapHandlerImpl(NexusHandler):
+class LongitudeLatitudeMapCalcHandlerImpl(NexusCalcHandler):
     name = "Longitude/Latitude Time Average Map"
     path = "/longitudeLatitudeMap"
     description = "Computes a Latitude/Longitude Time Average plot given an arbitrary geographical area and time range"
@@ -73,13 +73,8 @@ class LongitudeLatitudeMapHandlerImpl(NexusHandler):
     }
     singleton = True
 
-    def __init__(self):
-        NexusHandler.__init__(self, skipCassandra=True)
-        self.log = logging.getLogger(__name__)
-
     def parse_arguments(self, request):
         # Parse input arguments
-        self.log.debug("Parsing arguments")
         try:
             ds = request.get_dataset()[0]
         except:
@@ -115,7 +110,7 @@ class LongitudeLatitudeMapHandlerImpl(NexusHandler):
 
         ds, bounding_polygon, start_seconds_from_epoch, end_seconds_from_epoch = self.parse_arguments(request)
 
-        boxes = self._tile_service.get_distinct_bounding_boxes_in_polygon(bounding_polygon, ds,
+        boxes = self._get_tile_service().get_distinct_bounding_boxes_in_polygon(bounding_polygon, ds,
                                                                           start_seconds_from_epoch,
                                                                           end_seconds_from_epoch)
         point_avg_over_time = lat_lon_map_driver(bounding_polygon, start_seconds_from_epoch, end_seconds_from_epoch, ds,
@@ -131,7 +126,7 @@ class LongitudeLatitudeMapHandlerImpl(NexusHandler):
             "endTime": datetime.utcfromtimestamp(end_seconds_from_epoch).strftime('%Y-%m-%dT%H:%M:%SZ')
         }
         return LongitudeLatitudeMapResults(
-            results=LongitudeLatitudeMapHandlerImpl.results_to_dicts(point_avg_over_time), meta=None,
+            results=LongitudeLatitudeMapCalcHandlerImpl.results_to_dicts(point_avg_over_time), meta=None,
             **kwargs)
 
     @staticmethod

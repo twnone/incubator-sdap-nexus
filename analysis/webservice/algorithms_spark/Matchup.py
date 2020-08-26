@@ -31,9 +31,10 @@ from scipy import spatial
 from shapely import wkt
 from shapely.geometry import Point
 from shapely.geometry import box
-from shapely.geos import ReadingError
+from shapely.geos import WKTReadingError
 
-from webservice.NexusHandler import SparkHandler, nexus_handler
+from webservice.NexusHandler import nexus_handler
+from webservice.algorithms_spark.NexusCalcSparkHandler import NexusCalcSparkHandler
 from webservice.algorithms.doms import config as edge_endpoints
 from webservice.algorithms.doms import values as doms_values
 from webservice.algorithms.doms.BaseDomsHandler import DomsQueryResults
@@ -50,7 +51,7 @@ def iso_time_to_epoch(str_time):
 
 
 @nexus_handler
-class Matchup(SparkHandler):
+class Matchup(NexusCalcSparkHandler):
     name = "Matchup"
     path = "/match_spark"
     description = "Match measurements between two or more datasets"
@@ -130,8 +131,8 @@ class Matchup(SparkHandler):
     }
     singleton = True
 
-    def __init__(self):
-        SparkHandler.__init__(self, skipCassandra=True)
+    def __init__(self, algorithm_config=None, sc=None):
+        NexusCalcSparkHandler.__init__(self, algorithm_config=algorithm_config, sc=sc)
         self.log = logging.getLogger(__name__)
 
     def parse_arguments(self, request):
@@ -220,7 +221,7 @@ class Matchup(SparkHandler):
         self.log.debug("Querying for tiles in search domain")
         # Get tile ids in box
         tile_ids = [tile.tile_id for tile in
-                    self._tile_service.find_tiles_in_polygon(bounding_polygon, primary_ds_name,
+                    self._get_tile_service().find_tiles_in_polygon(bounding_polygon, primary_ds_name,
                                                              start_seconds_from_epoch, end_seconds_from_epoch,
                                                              fetch_data=False, fl='id',
                                                              sort=['tile_min_time_dt asc', 'tile_min_lon asc',
@@ -400,7 +401,7 @@ class DomsPoint(object):
 
         try:
             x, y = wkt.loads(edge_point['point']).coords[0]
-        except ReadingError:
+        except WKTReadingError:
             try:
                 x, y = Point(*[float(c) for c in edge_point['point'].split(' ')]).coords[0]
             except ValueError:
@@ -580,7 +581,7 @@ def match_satellite_to_insitu(tile_ids, primary_b, matchup_b, parameter_b, tt_b,
     for n, edge_point in enumerate(edge_results):
         try:
             x, y = wkt.loads(edge_point['point']).coords[0]
-        except ReadingError:
+        except WKTReadingError:
             try:
                 x, y = Point(*[float(c) for c in edge_point['point'].split(' ')]).coords[0]
             except ValueError:

@@ -23,12 +23,13 @@ from nexustiles.model.nexusmodel import get_approximate_value_for_lat_lon
 from scipy.stats import linregress
 from shapely.geometry import box
 
-from webservice.NexusHandler import NexusHandler, nexus_handler, DEFAULT_PARAMETERS_SPEC
+from webservice.NexusHandler import nexus_handler, DEFAULT_PARAMETERS_SPEC
+from webservice.algorithms.NexusCalcHandler import NexusCalcHandler
 from webservice.webmodel import NexusProcessingException, NexusResults
 
 
 @nexus_handler
-class LongitudeLatitudeMapHandlerImpl(NexusHandler):
+class LongitudeLatitudeMapCalcHandlerImpl(NexusCalcHandler):
     name = "Correlation Map"
     path = "/correlationMap"
     description = "Computes a correlation map between two datasets given an arbitrary geographical area and time range"
@@ -39,9 +40,6 @@ class LongitudeLatitudeMapHandlerImpl(NexusHandler):
         "description": "The resolution of the resulting correlation map"
     }
     singleton = True
-
-    def __init__(self):
-        NexusHandler.__init__(self)
 
     def calc(self, computeOptions, **args):
         minLat = computeOptions.get_min_lat()
@@ -56,9 +54,9 @@ class LongitudeLatitudeMapHandlerImpl(NexusHandler):
         if not len(ds) == 2:
             raise Exception("Requires two datasets for comparison. Specify request parameter ds=Dataset_1,Dataset_2")
 
-        ds1tiles = self._tile_service.find_tiles_in_polygon(box(minLon, minLat, maxLon, maxLat), ds[0], startTime,
+        ds1tiles = self._get_tile_service().find_tiles_in_polygon(box(minLon, minLat, maxLon, maxLat), ds[0], startTime,
                                                             endTime)
-        ds2tiles = self._tile_service.find_tiles_in_polygon(box(minLon, minLat, maxLon, maxLat), ds[1], startTime,
+        ds2tiles = self._get_tile_service().find_tiles_in_polygon(box(minLon, minLat, maxLon, maxLat), ds[1], startTime,
                                                             endTime)
 
         matches = self._match_tiles(ds1tiles, ds2tiles)

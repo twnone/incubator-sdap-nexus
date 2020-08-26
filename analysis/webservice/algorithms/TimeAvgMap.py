@@ -15,14 +15,13 @@
 
 
 # distutils: include_dirs = /usr/local/lib/python2.7/site-packages/cassandra
-import pyximport
 
-pyximport.install()
 
 import sys
 import numpy as np
 from time import time
-from webservice.NexusHandler import NexusHandler, DEFAULT_PARAMETERS_SPEC
+from webservice.NexusHandler import DEFAULT_PARAMETERS_SPEC
+from webservice.algorithms.NexusCalcHandler import NexusCalcHandler
 from webservice.webmodel import NexusResults, NoDataException
 from netCDF4 import Dataset
 
@@ -31,15 +30,12 @@ from netCDF4 import Dataset
 
 
 # @nexus_handler
-class TimeAvgMapHandlerImpl(NexusHandler):
+class TimeAvgMapCalcHandlerImpl(NexusCalcHandler):
     name = "Time Average Map"
     path = "/timeAvgMap"
     description = "Computes a Latitude/Longitude Time Average plot given an arbitrary geographical area and time range"
     params = DEFAULT_PARAMETERS_SPEC
     singleton = True
-
-    def __init__(self):
-        NexusHandler.__init__(self, skipCassandra=False)
 
     def _find_native_resolution(self):
         # Get a quick set of tiles (1 degree at center of box) at 1 time stamp
@@ -49,7 +45,7 @@ class TimeAvgMapHandlerImpl(NexusHandler):
         t = self._endTime
         t_incr = 86400
         while ntiles == 0:
-            nexus_tiles = self._tile_service.get_tiles_bounded_by_box(midLat - 0.5, midLat + 0.5, midLon - 0.5,
+            nexus_tiles = self._get_tile_service().get_tiles_bounded_by_box(midLat - 0.5, midLat + 0.5, midLon - 0.5,
                                                                       midLon + 0.5, ds=self._ds, start_time=t - t_incr,
                                                                       end_time=t)
             ntiles = len(nexus_tiles)
@@ -80,7 +76,7 @@ class TimeAvgMapHandlerImpl(NexusHandler):
         t = self._endTime
         t_incr = 86400
         while ntiles == 0:
-            nexus_tiles = self._tile_service.get_tiles_bounded_by_box(self._minLat, self._maxLat, self._minLon,
+            nexus_tiles = self._get_tile_service().get_tiles_bounded_by_box(self._minLat, self._maxLat, self._minLon,
                                                                       self._maxLon, ds=self._ds, start_time=t - t_incr,
                                                                       end_time=t)
             ntiles = len(nexus_tiles)
@@ -128,7 +124,7 @@ class TimeAvgMapHandlerImpl(NexusHandler):
                 t1 = time()
                 print 'nexus call start at time %f' % t1
                 sys.stdout.flush()
-                nexus_tiles = self._tile_service.get_tiles_bounded_by_box(min_lat - self._latRes / 2,
+                nexus_tiles = self._get_tile_service().get_tiles_bounded_by_box(min_lat - self._latRes / 2,
                                                                           max_lat + self._latRes / 2,
                                                                           min_lon - self._lonRes / 2,
                                                                           max_lon + self._lonRes / 2, ds=self._ds,

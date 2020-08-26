@@ -33,16 +33,18 @@ from pytz import timezone
 from scipy import stats
 
 from webservice import Filtering as filtering
-from webservice.NexusHandler import NexusHandler, nexus_handler
+from webservice.NexusHandler import nexus_handler
+from webservice.algorithms.NexusCalcHandler import NexusCalcHandler
 from webservice.webmodel import NexusResults, NexusProcessingException, NoDataException
 
 SENTINEL = 'STOP'
 EPOCH = timezone('UTC').localize(datetime(1970, 1, 1))
 ISO_8601 = '%Y-%m-%dT%H:%M:%S%z'
 
+logger = logging.getLogger(__name__)
 
 @nexus_handler
-class TimeSeriesHandlerImpl(NexusHandler):
+class TimeSeriesCalcHandlerImpl(NexusCalcHandler):
     name = "Time Series"
     path = "/stats"
     description = "Computes a time series plot between one or more datasets given an arbitrary geographical area and time range"
@@ -83,13 +85,8 @@ class TimeSeriesHandlerImpl(NexusHandler):
     }
     singleton = True
 
-    def __init__(self):
-        NexusHandler.__init__(self)
-        self.log = logging.getLogger(__name__)
-
     def parse_arguments(self, request):
         # Parse input arguments
-        self.log.debug("Parsing arguments")
 
         try:
             ds = request.get_dataset()
@@ -180,11 +177,11 @@ class TimeSeriesHandlerImpl(NexusHandler):
 
         if len(ds) == 2:
             try:
-                stats = TimeSeriesHandlerImpl.calculate_comparison_stats(results)
+                stats = TimeSeriesCalcHandlerImpl.calculate_comparison_stats(results)
             except Exception:
                 stats = {}
                 tb = traceback.format_exc()
-                self.log.warn("Error when calculating comparison stats:\n%s" % tb)
+                logger.warn("Error when calculating comparison stats:\n%s" % tb)
         else:
             stats = {}
 
@@ -198,7 +195,7 @@ class TimeSeriesHandlerImpl(NexusHandler):
                                 maxLon=bounding_polygon.bounds[2], ds=ds, startTime=start_seconds_from_epoch,
                                 endTime=end_seconds_from_epoch)
 
-        self.log.info("Merging results and calculating comparisons took %s" % (str(datetime.now() - the_time)))
+        logger.info("Merging results and calculating comparisons took %s" % (str(datetime.now() - the_time)))
         return res
 
     def getTimeSeriesStatsForBoxSingleDataSet(self, bounding_polygon, ds, start_seconds_from_epoch,
@@ -206,14 +203,14 @@ class TimeSeriesHandlerImpl(NexusHandler):
                                               apply_seasonal_cycle_filter=True, apply_low_pass_filter=True):
 
         the_time = datetime.now()
-        daysinrange = self._tile_service.find_days_in_range_asc(bounding_polygon.bounds[1],
+        daysinrange = self._get_tile_service().find_days_in_range_asc(bounding_polygon.bounds[1],
                                                                 bounding_polygon.bounds[3],
                                                                 bounding_polygon.bounds[0],
                                                                 bounding_polygon.bounds[2],
                                                                 ds,
                                                                 start_seconds_from_epoch,
                                                                 end_seconds_from_epoch)
-        self.log.info("Finding days in range took %s for dataset %s" % (str(datetime.now() - the_time), ds))
+        logger.info("Finding days in range took %s for dataset %s" % (str(datetime.now() - the_time), ds))
 
         if len(daysinrange) == 0:
             raise NoDataException(reason="No data found for selected timeframe")
@@ -247,7 +244,7 @@ class TimeSeriesHandlerImpl(NexusHandler):
                 result = done_queue.get()
                 try:
                     error_str = result['error']
-                    self.log.error(error_str)
+                    logger.error(error_str)
                     raise NexusProcessingException(reason="Error calculating average by day.")
                 except KeyError:
                     pass
@@ -258,7 +255,7 @@ class TimeSeriesHandlerImpl(NexusHandler):
             manager.shutdown()
 
         results = sorted(results, key=lambda entry: entry["time"])
-        self.log.info("Time series calculation took %s for dataset %s" % (str(datetime.now() - the_time), ds))
+        logger.info("Time series calculation took %s for dataset %s" % (str(datetime.now() - the_time), ds))
 
         if apply_seasonal_cycle_filter:
             the_time = datetime.now()
@@ -271,7 +268,7 @@ class TimeSeriesHandlerImpl(NexusHandler):
                 result['meanSeasonal'] = seasonal_mean
                 result['minSeasonal'] = seasonal_min
                 result['maxSeasonal'] = seasonal_max
-            self.log.info(
+            logger.info(
                 "Seasonal calculation took %s for dataset %s" % (str(datetime.now() - the_time), ds))
 
         the_time = datetime.now()
@@ -290,9 +287,9 @@ class TimeSeriesHandlerImpl(NexusHandler):
             except Exception as e:
                 # If it doesn't work log the error but ignore it
                 tb = traceback.format_exc()
-                self.log.warn("Error calculating SeasonalLowPass filter:\n%s" % tb)
+                logger.warn("Error calculating SeasonalLowPass filter:\n%s" % tb)
 
-        self.log.info(
+        logger.info(
             "LowPass filter calculation took %s for dataset %s" % (str(datetime.now() - the_time), ds))
 
         return results, {}
@@ -310,7 +307,7 @@ class TimeSeriesHandlerImpl(NexusHandler):
             end_of_month = datetime(year, month, calendar.monthrange(year, month)[1], 23, 59, 59)
             start = (pytz.UTC.localize(beginning_of_month) - EPOCH).total_seconds()
             end = (pytz.UTC.localize(end_of_month) - EPOCH).total_seconds()
-            tile_stats = self._tile_service.find_tiles_in_polygon(bounding_polygon, ds, start, end,
+            tile_stats = self._get_tile_service().find_tiles_in_polygon(bounding_polygon, ds, start, end,
                                                                   fl=('id,'
                                                                       'tile_avg_val_d,tile_count_i,'
                                                                       'tile_min_val_d,tile_max_val_d,'
@@ -336,8 +333,8 @@ class TimeSeriesHandlerImpl(NexusHandler):
             tile_counts = [tile.tile_stats.count for tile in inner_tiles]
 
             # Border tiles need have the data loaded, masked, and stats recalculated
-            border_tiles = list(self._tile_service.fetch_data_for_tiles(*border_tiles))
-            border_tiles = self._tile_service.mask_tiles_to_polygon(bounding_polygon, border_tiles)
+            border_tiles = list(self._get_tile_service().fetch_data_for_tiles(*border_tiles))
+            border_tiles = self._get_tile_service().mask_tiles_to_polygon(bounding_polygon, border_tiles)
             for tile in border_tiles:
                 tile.update_stats()
                 tile_means.append(tile.tile_stats.mean)
@@ -367,9 +364,9 @@ class TimeSeriesHandlerImpl(NexusHandler):
     @lru_cache()
     def get_min_max_date(self, ds=None):
         min_date = pytz.timezone('UTC').localize(
-            datetime.utcfromtimestamp(self._tile_service.get_min_time([], ds=ds)))
+            datetime.utcfromtimestamp(self._get_tile_service().get_min_time([], ds=ds)))
         max_date = pytz.timezone('UTC').localize(
-            datetime.utcfromtimestamp(self._tile_service.get_max_time([], ds=ds)))
+            datetime.utcfromtimestamp(self._get_tile_service().get_max_time([], ds=ds)))
 
         return min_date.date(), max_date.date()
 

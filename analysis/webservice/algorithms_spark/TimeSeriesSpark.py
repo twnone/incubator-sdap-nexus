@@ -13,14 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
-import math
 import calendar
 import itertools
 import logging
 import traceback
 from cStringIO import StringIO
 from datetime import datetime
+from functools import partial
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
@@ -32,17 +31,19 @@ from backports.functools_lru_cache import lru_cache
 from nexustiles.nexustiles import NexusTileService
 from pytz import timezone
 from scipy import stats
-
 from webservice import Filtering as filtering
-from webservice.NexusHandler import nexus_handler, SparkHandler
+from webservice.NexusHandler import nexus_handler
+from webservice.algorithms_spark.NexusCalcSparkHandler import NexusCalcSparkHandler
 from webservice.webmodel import NexusResults, NoDataException, NexusProcessingException
 
 EPOCH = timezone('UTC').localize(datetime(1970, 1, 1))
 ISO_8601 = '%Y-%m-%dT%H:%M:%S%z'
 
+logger = logging.getLogger(__name__)
+
 
 @nexus_handler
-class TimeSeriesHandlerImpl(SparkHandler):
+class TimeSeriesSparkHandlerImpl(NexusCalcSparkHandler):
     name = "Time Series Spark"
     path = "/timeSeriesSpark"
     description = "Computes a time series plot between one or more datasets given an arbitrary geographical area and time range"
@@ -89,10 +90,6 @@ class TimeSeriesHandlerImpl(SparkHandler):
         }
     }
     singleton = True
-
-    def __init__(self):
-        SparkHandler.__init__(self)
-        self.log = logging.getLogger(__name__)
 
     def parse_arguments(self, request):
         # Parse input arguments
@@ -168,21 +165,24 @@ class TimeSeriesHandlerImpl(SparkHandler):
         :param args: dict
         :return:
         """
-
-        ds, bounding_polygon, start_seconds_from_epoch, end_seconds_from_epoch, apply_seasonal_cycle_filter, apply_low_pass_filter, nparts_requested = self.parse_arguments(request)
+        start_time = datetime.now()
+        ds, bounding_polygon, start_seconds_from_epoch, end_seconds_from_epoch, apply_seasonal_cycle_filter, apply_low_pass_filter, nparts_requested = self.parse_arguments(
+            request)
+        metrics_record = self._create_metrics_record()
 
         resultsRaw = []
 
         for shortName in ds:
 
             the_time = datetime.now()
-            daysinrange = self._tile_service.find_days_in_range_asc(bounding_polygon.bounds[1],
+            daysinrange = self._get_tile_service().find_days_in_range_asc(bounding_polygon.bounds[1],
                                                                     bounding_polygon.bounds[3],
                                                                     bounding_polygon.bounds[0],
                                                                     bounding_polygon.bounds[2],
                                                                     shortName,
                                                                     start_seconds_from_epoch,
-                                                                    end_seconds_from_epoch)
+                                                                    end_seconds_from_epoch,
+                                                                    metrics_callback=metrics_record.record_metrics)
             self.log.info("Finding days in range took %s for dataset %s" % (str(datetime.now() - the_time), shortName))
 
             ndays = len(daysinrange)
@@ -194,12 +194,12 @@ class TimeSeriesHandlerImpl(SparkHandler):
                 self.log.debug('{0}, {1}'.format(i, datetime.utcfromtimestamp(d)))
             spark_nparts = self._spark_nparts(nparts_requested)
             self.log.info('Using {} partitions'.format(spark_nparts))
-            the_time = datetime.now()
             results, meta = spark_driver(daysinrange, bounding_polygon,
-                                         shortName, spark_nparts=spark_nparts,
+                                         shortName,
+                                         self._tile_service_factory,
+                                         metrics_record.record_metrics,
+                                         spark_nparts=spark_nparts,
                                          sc=self._sc)
-            self.log.info(
-                "Time series calculation took %s for dataset %s" % (str(datetime.now() - the_time), shortName))
 
             if apply_seasonal_cycle_filter:
                 the_time = datetime.now()
@@ -249,7 +249,7 @@ class TimeSeriesHandlerImpl(SparkHandler):
 
         if len(ds) == 2:
             try:
-                stats = TimeSeriesHandlerImpl.calculate_comparison_stats(results)
+                stats = TimeSeriesSparkHandlerImpl.calculate_comparison_stats(results)
             except Exception:
                 stats = {}
                 tb = traceback.format_exc()
@@ -267,6 +267,10 @@ class TimeSeriesHandlerImpl(SparkHandler):
                                 maxLon=bounding_polygon.bounds[2], ds=ds, startTime=start_seconds_from_epoch,
                                 endTime=end_seconds_from_epoch)
 
+        total_duration = (datetime.now() - start_time).total_seconds()
+        metrics_record.record_metrics(actual_time=total_duration)
+        metrics_record.print_metrics(logger)
+
         self.log.info("Merging results and calculating comparisons took %s" % (str(datetime.now() - the_time)))
         return res
 
@@ -283,7 +287,7 @@ class TimeSeriesHandlerImpl(SparkHandler):
             end_of_month = datetime(year, month, calendar.monthrange(year, month)[1], 23, 59, 59)
             start = (pytz.UTC.localize(beginning_of_month) - EPOCH).total_seconds()
             end = (pytz.UTC.localize(end_of_month) - EPOCH).total_seconds()
-            tile_stats = self._tile_service.find_tiles_in_polygon(bounding_polygon, ds, start, end,
+            tile_stats = self._get_tile_service().find_tiles_in_polygon(bounding_polygon, ds, start, end,
                                                                   fl=('id,'
                                                                       'tile_avg_val_d,tile_count_i,'
                                                                       'tile_min_val_d,tile_max_val_d,'
@@ -309,8 +313,8 @@ class TimeSeriesHandlerImpl(SparkHandler):
             tile_counts = [tile.tile_stats.count for tile in inner_tiles]
 
             # Border tiles need have the data loaded, masked, and stats recalculated
-            border_tiles = list(self._tile_service.fetch_data_for_tiles(*border_tiles))
-            border_tiles = self._tile_service.mask_tiles_to_polygon(bounding_polygon, border_tiles)
+            border_tiles = list(self._get_tile_service().fetch_data_for_tiles(*border_tiles))
+            border_tiles = self._get_tile_service().mask_tiles_to_polygon(bounding_polygon, border_tiles)
             for tile in border_tiles:
                 tile.update_stats()
                 tile_means.append(tile.tile_stats.mean)
@@ -340,9 +344,9 @@ class TimeSeriesHandlerImpl(SparkHandler):
     @lru_cache()
     def get_min_max_date(self, ds=None):
         min_date = pytz.timezone('UTC').localize(
-            datetime.utcfromtimestamp(self._tile_service.get_min_time([], ds=ds)))
+            datetime.utcfromtimestamp(self._get_tile_service().get_min_time([], ds=ds)))
         max_date = pytz.timezone('UTC').localize(
-            datetime.utcfromtimestamp(self._tile_service.get_max_time([], ds=ds)))
+            datetime.utcfromtimestamp(self._get_tile_service().get_max_time([], ds=ds)))
 
         return min_date.date(), max_date.date()
 
@@ -486,7 +490,7 @@ class TimeSeriesResults(NexusResults):
         return sio.getvalue()
 
 
-def spark_driver(daysinrange, bounding_polygon, ds, fill=-9999.,
+def spark_driver(daysinrange, bounding_polygon, ds, tile_service_factory, metrics_callback, fill=-9999.,
                  spark_nparts=1, sc=None):
     nexus_tiles_spark = [(bounding_polygon.wkt, ds,
                           list(daysinrange_part), fill)
@@ -495,14 +499,15 @@ def spark_driver(daysinrange, bounding_polygon, ds, fill=-9999.,
 
     # Launch Spark computations
     rdd = sc.parallelize(nexus_tiles_spark, spark_nparts)
-    results = rdd.map(calc_average_on_day).collect()
+    metrics_callback(partitions=rdd.getNumPartitions())
+    results = rdd.flatMap(partial(calc_average_on_day, tile_service_factory, metrics_callback)).collect()
     results = list(itertools.chain.from_iterable(results))
     results = sorted(results, key=lambda entry: entry["time"])
 
     return results, {}
 
 
-def calc_average_on_day(tile_in_spark):
+def calc_average_on_day(tile_service_factory, metrics_callback, tile_in_spark):
     import shapely.wkt
     from datetime import datetime
     from pytz import timezone
@@ -511,13 +516,16 @@ def calc_average_on_day(tile_in_spark):
     (bounding_wkt, dataset, timestamps, fill) = tile_in_spark
     if len(timestamps) == 0:
         return []
-    tile_service = NexusTileService()
+    tile_service = tile_service_factory()
     ds1_nexus_tiles = \
         tile_service.get_tiles_bounded_by_polygon(shapely.wkt.loads(bounding_wkt),
                                                   dataset,
                                                   timestamps[0],
                                                   timestamps[-1],
-                                                  rows=5000)
+                                                  rows=5000,
+                                                  metrics_callback=metrics_callback)
+
+    calculation_start = datetime.now()
 
     tile_dict = {}
     for timeinseconds in timestamps:
@@ -568,4 +576,8 @@ def calc_average_on_day(tile_in_spark):
             'iso_time': datetime.utcfromtimestamp(int(timeinseconds)).replace(tzinfo=timezone('UTC')).strftime(ISO_8601)
         }
         stats_arr.append(stat)
-    return stats_arr
+
+    calculation_time = (datetime.now() - calculation_start).total_seconds()
+    metrics_callback(calculation=calculation_time)
+
+    return [stats_arr]

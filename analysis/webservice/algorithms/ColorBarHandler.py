@@ -20,12 +20,12 @@ import time
 import numpy as np
 
 import colortables
-from webservice.NexusHandler import NexusHandler as BaseHandler
+from webservice.algorithms.NexusCalcHandler import NexusCalcHandler as BaseHandler
 from webservice.NexusHandler import nexus_handler
 
 
 @nexus_handler
-class ColorBarHandler(BaseHandler):
+class ColorBarCalcHandler(BaseHandler):
     name = "ColorBarHandler"
     path = "/colorbar"
     description = "Creates a CMC colorbar spec for a dataset"
@@ -65,10 +65,10 @@ class ColorBarHandler(BaseHandler):
         dataTimeStart = dataTime - 86400.0  # computeOptions.get_datetime_arg("t", None)
         dataTimeEnd = dataTime
 
-        daysinrange = self._tile_service.find_days_in_range_asc(-90.0, 90.0, -180.0, 180.0, ds, dataTimeStart,
+        daysinrange = self._get_tile_service().find_days_in_range_asc(-90.0, 90.0, -180.0, 180.0, ds, dataTimeStart,
                                                                 dataTimeEnd)
 
-        ds1_nexus_tiles = self._tile_service.get_tiles_bounded_by_box_at_time(-90.0, 90.0, -180.0, 180.0,
+        ds1_nexus_tiles = self._get_tile_service().get_tiles_bounded_by_box_at_time(-90.0, 90.0, -180.0, 180.0,
                                                                               ds,
                                                                               daysinrange[0])
 

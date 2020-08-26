@@ -32,7 +32,7 @@ from webservice.NexusHandler import nexus_handler
 
 
 @nexus_handler
-class CombinedDomsMatchupQueryHandler(BaseDomsHandler.BaseDomsQueryHandler):
+class CombinedDomsMatchupQueryHandler(BaseDomsHandler.BaseDomsQueryCalcHandler):
     name = "Experimental Combined DOMS In-Situ Matchup"
     path = "/domsmatchup"
     description = ""
@@ -40,7 +40,7 @@ class CombinedDomsMatchupQueryHandler(BaseDomsHandler.BaseDomsQueryHandler):
     singleton = True
 
     def __init__(self):
-        BaseDomsHandler.BaseDomsQueryHandler.__init__(self)
+        BaseDomsHandler.BaseDomsQueryCalcHandler.__init__(self)
 
     def fetchData(self, endpoints, startTime, endTime, bbox, depth_min, depth_max, platforms):
 
@@ -109,14 +109,14 @@ class CombinedDomsMatchupQueryHandler(BaseDomsHandler.BaseDomsQueryHandler):
                 '''
                 Single Threaded at the moment...
                 '''
-                daysinrange = self._tile_service.find_days_in_range_asc(bounds.south, bounds.north, bounds.west,
+                daysinrange = self._get_tile_service().find_days_in_range_asc(bounds.south, bounds.north, bounds.west,
                                                                         bounds.east, matchupId,
                                                                         self.__parseDatetime(startTime) / 1000,
                                                                         self.__parseDatetime(endTime) / 1000)
 
                 tilesByDay = {}
                 for dayTimestamp in daysinrange:
-                    ds1_nexus_tiles = self._tile_service.get_tiles_bounded_by_box_at_time(bounds.south, bounds.north,
+                    ds1_nexus_tiles = self._get_tile_service().get_tiles_bounded_by_box_at_time(bounds.south, bounds.north,
                                                                                           bounds.west, bounds.east,
                                                                                           matchupId, dayTimestamp)
 

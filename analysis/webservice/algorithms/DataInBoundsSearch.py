@@ -14,12 +14,12 @@
 # limitations under the License.
 
 
-import logging
 from datetime import datetime
 
 from pytz import timezone
 
-from webservice.NexusHandler import NexusHandler, nexus_handler
+from webservice.NexusHandler import nexus_handler
+from webservice.algorithms.NexusCalcHandler import NexusCalcHandler
 from webservice.webmodel import NexusResults, NexusProcessingException
 
 EPOCH = timezone('UTC').localize(datetime(1970, 1, 1))
@@ -27,7 +27,7 @@ ISO_8601 = '%Y-%m-%dT%H:%M:%S%z'
 
 
 @nexus_handler
-class DataInBoundsSearchHandlerImpl(NexusHandler):
+class DataInBoundsSearchCalcHandlerImpl(NexusCalcHandler):
     name = "Data In-Bounds Search"
     path = "/datainbounds"
     description = "Fetches point values for a given dataset and geographical area"
@@ -66,13 +66,8 @@ class DataInBoundsSearchHandlerImpl(NexusHandler):
     }
     singleton = True
 
-    def __init__(self):
-        NexusHandler.__init__(self)
-        self.log = logging.getLogger(__name__)
-
     def parse_arguments(self, request):
         # Parse input arguments
-        self.log.debug("Parsing arguments")
 
         try:
             ds = request.get_dataset()[0]
@@ -131,10 +126,10 @@ class DataInBoundsSearchHandlerImpl(NexusHandler):
             min_lon = bounding_polygon.bounds[0]
             max_lon = bounding_polygon.bounds[2]
 
-            tiles = self._tile_service.get_tiles_bounded_by_box(min_lat, max_lat, min_lon, max_lon, ds, start_time,
+            tiles = self._get_tile_service().get_tiles_bounded_by_box(min_lat, max_lat, min_lon, max_lon, ds, start_time,
                                                                 end_time)
         else:
-            tiles = self._tile_service.get_tiles_by_metadata(metadata_filter, ds, start_time, end_time)
+            tiles = self._get_tile_service().get_tiles_by_metadata(metadata_filter, ds, start_time, end_time)
 
         data = []
         for tile in tiles:

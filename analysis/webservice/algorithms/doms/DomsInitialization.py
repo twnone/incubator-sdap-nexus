@@ -14,14 +14,15 @@
 # limitations under the License.
 
 
-
 import ConfigParser
 import logging
 
 import pkg_resources
-from cassandra.cluster import Cluster
-from cassandra.policies import TokenAwarePolicy, DCAwareRoundRobinPolicy
 
+from cassandra.auth import PlainTextAuthProvider
+from cassandra.cluster import Cluster
+from cassandra.policies import (DCAwareRoundRobinPolicy, TokenAwarePolicy,
+                                WhiteListRoundRobinPolicy)
 from webservice.NexusHandler import nexus_initializer
 
 
@@ -34,28 +35,53 @@ class DomsInitializer:
         log = logging.getLogger(__name__)
         log.info("*** STARTING DOMS INITIALIZATION ***")
 
-        domsconfig = ConfigParser.RawConfigParser()
-        domsconfig.readfp(pkg_resources.resource_stream(__name__, "domsconfig.ini"), filename='domsconfig.ini')
+        domsconfig = ConfigParser.SafeConfigParser()
+        domsconfig.read(DomsInitializer._get_config_files('domsconfig.ini'))
+        domsconfig = self.override_config(domsconfig, config)
 
         cassHost = domsconfig.get("cassandra", "host")
+        cassPort = domsconfig.get("cassandra", "port")
+        cassUsername = domsconfig.get("cassandra", "username")
+        cassPassword = domsconfig.get("cassandra", "password")
         cassKeyspace = domsconfig.get("cassandra", "keyspace")
         cassDatacenter = domsconfig.get("cassandra", "local_datacenter")
         cassVersion = int(domsconfig.get("cassandra", "protocol_version"))
+        cassPolicy = domsconfig.get("cassandra", "dc_policy")
 
         log.info("Cassandra Host(s): %s" % (cassHost))
         log.info("Cassandra Keyspace: %s" % (cassKeyspace))
         log.info("Cassandra Datacenter: %s" % (cassDatacenter))
         log.info("Cassandra Protocol Version: %s" % (cassVersion))
+        log.info("Cassandra DC Policy: %s" % (cassPolicy))
 
-        dc_policy = DCAwareRoundRobinPolicy(cassDatacenter)
+        if cassPolicy == 'DCAwareRoundRobinPolicy':
+            dc_policy = DCAwareRoundRobinPolicy(cassDatacenter)
+        elif cassPolicy == 'WhiteListRoundRobinPolicy':
+            dc_policy = WhiteListRoundRobinPolicy([cassHost])
         token_policy = TokenAwarePolicy(dc_policy)
 
-        with Cluster([host for host in cassHost.split(',')], load_balancing_policy=token_policy,
-                     protocol_version=cassVersion) as cluster:
+        if cassUsername and cassPassword:
+            auth_provider = PlainTextAuthProvider(username=cassUsername, password=cassPassword)
+        else:
+            auth_provider = None
+
+        with Cluster([host for host in cassHost.split(',')],
+                     port=int(cassPort),
+                     load_balancing_policy=token_policy,
+                     protocol_version=cassVersion,
+                     auth_provider=auth_provider) as cluster:
             session = cluster.connect()
 
             self.createKeyspace(session, cassKeyspace)
             self.createTables(session)
+
+    def override_config(self, first, second):
+        for section in second.sections():
+            if first.has_section(section):  # only override preexisting section, ignores the other
+                for option in second.options(section):
+                    if second.get(section, option) is not None:
+                        first.set(section, option, second.get(section, option))
+        return first
 
     def createKeyspace(self, session, cassKeyspace):
         log = logging.getLogger(__name__)
@@ -143,3 +169,17 @@ class DomsInitializer:
             );
         """
         session.execute(cql)
+
+    @staticmethod
+    def _get_config_files(filename):
+        log = logging.getLogger(__name__)
+        candidates = []
+        extensions = ['.default', '']
+        for extension in extensions:
+            try:
+                candidate = pkg_resources.resource_filename(__name__, filename + extension)
+                candidates.append(candidate)
+            except KeyError as ke:
+                log.warning('configuration file {} not found'.format(filename + extension))
+
+        return candidates

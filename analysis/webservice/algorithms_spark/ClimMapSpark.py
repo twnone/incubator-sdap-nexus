@@ -22,32 +22,27 @@ from datetime import datetime
 import numpy as np
 from nexustiles.nexustiles import NexusTileService
 
-from webservice.NexusHandler import nexus_handler, SparkHandler, DEFAULT_PARAMETERS_SPEC
+from webservice.NexusHandler import nexus_handler, DEFAULT_PARAMETERS_SPEC
+from webservice.algorithms_spark.NexusCalcSparkHandler import NexusCalcSparkHandler
 from webservice.webmodel import NexusResults, NexusProcessingException, NoDataException
-
+from functools import partial
 
 @nexus_handler
-class ClimMapSparkHandlerImpl(SparkHandler):
+class ClimMapNexusSparkHandlerImpl(NexusCalcSparkHandler):
     name = "Climatology Map Spark"
     path = "/climMapSpark"
     description = "Computes a Latitude/Longitude Time Average map for a given month given an arbitrary geographical area and year range"
     params = DEFAULT_PARAMETERS_SPEC
-    singleton = True
-
-    def __init__(self):
-        SparkHandler.__init__(self)
-        self.log = logging.getLogger(__name__)
-        # self.log.setLevel(logging.DEBUG)
 
     @staticmethod
-    def _map(tile_in_spark):
+    def _map(tile_service_factory, tile_in_spark):
         tile_bounds = tile_in_spark[0]
         (min_lat, max_lat, min_lon, max_lon,
          min_y, max_y, min_x, max_x) = tile_bounds
         startTime = tile_in_spark[1]
         endTime = tile_in_spark[2]
         ds = tile_in_spark[3]
-        tile_service = NexusTileService()
+        tile_service = tile_service_factory()
         # print 'Started tile', tile_bounds
         # sys.stdout.flush()
         tile_inbounds_shape = (max_y - min_y + 1, max_x - min_x + 1)
@@ -66,13 +61,13 @@ class ClimMapSparkHandlerImpl(SparkHandler):
             # print 'nexus call start at time %f' % t1
             # sys.stdout.flush()
             nexus_tiles = \
-                ClimMapSparkHandlerImpl.query_by_parts(tile_service,
-                                                       min_lat, max_lat,
-                                                       min_lon, max_lon,
-                                                       ds,
-                                                       t_start,
-                                                       t_end,
-                                                       part_dim=2)
+                ClimMapNexusSparkHandlerImpl.query_by_parts(tile_service,
+                                                            min_lat, max_lat,
+                                                            min_lon, max_lon,
+                                                            ds,
+                                                            t_start,
+                                                            t_end,
+                                                            part_dim=2)
             # nexus_tiles = \
             #    tile_service.get_tiles_bounded_by_box(min_lat, max_lat, 
             #                                          min_lon, max_lon, 
@@ -201,7 +196,7 @@ class ClimMapSparkHandlerImpl(SparkHandler):
         spark_nparts = self._spark_nparts(nparts_requested)
         self.log.info('Using {} partitions'.format(spark_nparts))
         rdd = self._sc.parallelize(nexus_tiles_spark, spark_nparts)
-        sum_count_part = rdd.map(self._map)
+        sum_count_part = rdd.map(partial(self._map, self._tile_service_factory))
         sum_count = \
             sum_count_part.combineByKey(lambda val: val,
                                         lambda x, val: (x[0] + val[0],
