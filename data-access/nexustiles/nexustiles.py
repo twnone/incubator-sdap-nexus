@@ -29,6 +29,7 @@ import dao.CassandraProxy
 import dao.DynamoProxy
 import dao.S3Proxy
 import dao.SolrProxy
+import dao.ElasticsearchProxy
 from model.nexusmodel import Tile, BBox, TileStats
 
 EPOCH = timezone('UTC').localize(datetime(1970, 1, 1))
@@ -98,7 +99,11 @@ class NexusTileService(object):
                 raise ValueError("Error reading datastore from config file")
 
         if not skipMetadatastore:
-            self._metadatastore = dao.SolrProxy.SolrProxy(self._config)
+            metadatastore = self._config.get("metadatastore", "store")
+            if metadatastore == "solr":
+                self._metadatastore = dao.SolrProxy.SolrProxy(self._config)
+            elif metadatastore == "elasticsearch":
+                self._metadatastore = dao.ElasticsearchProxy.ElasticsearchProxy(self._config)
 
     def override_config(self, config):
         for section in config.sections():
